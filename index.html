@@ -1,287 +1,554 @@
-<!DOCTYPE html>
-<html lang="ru">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="stylesheet" href="./styles/styles.css" />
-    <link rel="icon" href="favicon.svg" />
-    <title>HTML Academy: Седона</title>
-  </head>
+(function () {
+    "use strict";
 
-  <body>
-    <div class="page-wrapper">
-      <h1 class="visually-hidden">Сайт курорта Седона</h1>
-      <header class="page-header" data-test="header">
-        <h2 class="visually-hidden">меню навигации по сайту</h2>
-        <img
-          class="page-logo"
-          src="./img/main-logo.png"
-          width="140"
-          height="70"
-          alt="логотип Седона"
-        />
-        <nav class="navigation">
-          <ul class="navigation-list">
-            <li class="navigation-item">
-              <a class="navigation-link navigation-link-active" href="#"
-                >Главная</a
-              >
-            </li>
-            <li class="navigation-item">
-              <a class="navigation-link" href="#">О седоне</a>
-            </li>
-            <li class="navigation-item">
-              <a class="navigation-link" href="catalog.html">Гостиницы</a>
-            </li>
-          </ul>
+    function injectProxy(
+        enableStyleSheetsProxy,
+        enableCustomElementRegistryProxy
+    ) {
+        document.dispatchEvent(
+            new CustomEvent("__darkreader__inlineScriptsAllowed")
+        );
+        const cleaners = [];
+        function cleanUp() {
+            cleaners.forEach((clean) => clean());
+            cleaners.splice(0);
+        }
+        function documentEventListener(type, listener, options) {
+            document.addEventListener(type, listener, options);
+            cleaners.push(() => document.removeEventListener(type, listener));
+        }
+        function disableConflictingPlugins() {
+            const disableWPDarkMode = () => {
+                if (window?.WPDarkMode?.deactivate) {
+                    window.WPDarkMode.deactivate();
+                }
+            };
+            disableWPDarkMode();
+        }
+        documentEventListener("__darkreader__cleanUp", cleanUp);
+        documentEventListener(
+            "__darkreader__disableConflictingPlugins",
+            disableConflictingPlugins
+        );
+        function overrideProperty(cls, prop, overrides) {
+            const proto = cls.prototype;
+            const oldDescriptor = Object.getOwnPropertyDescriptor(proto, prop);
+            if (!oldDescriptor) {
+                return;
+            }
+            const newDescriptor = {...oldDescriptor};
+            Object.keys(overrides).forEach((key) => {
+                const factory = overrides[key];
+                newDescriptor[key] = factory(oldDescriptor[key]);
+            });
+            Object.defineProperty(proto, prop, newDescriptor);
+            cleaners.push(() =>
+                Object.defineProperty(proto, prop, oldDescriptor)
+            );
+        }
+        function override(cls, prop, factory) {
+            overrideProperty(cls, prop, {value: factory});
+        }
+        function isDRElement(element) {
+            return element?.classList?.contains("darkreader");
+        }
+        function isDRSheet(sheet) {
+            return isDRElement(sheet.ownerNode);
+        }
+        const updateSheetEvent = new CustomEvent("__darkreader__updateSheet");
+        const adoptedSheetChangeEvent = new CustomEvent(
+            "__darkreader__adoptedStyleSheetChange"
+        );
+        const shadowDomAttachingEvent = new CustomEvent(
+            "__darkreader__shadowDomAttaching",
+            {bubbles: true}
+        );
+        const adoptedSheetOwners = new WeakMap();
+        const adoptedDeclarationSheets = new WeakMap();
+        function onAdoptedSheetChange(sheet) {
+            const owners = adoptedSheetOwners.get(sheet);
+            owners?.forEach((node) => {
+                if (node.isConnected) {
+                    node.dispatchEvent(adoptedSheetChangeEvent);
+                } else {
+                    owners.delete(node);
+                }
+            });
+        }
+        function reportSheetChange(sheet) {
+            if (sheet.ownerNode && !isDRSheet(sheet)) {
+                sheet.ownerNode.dispatchEvent(updateSheetEvent);
+            }
+            if (adoptedSheetOwners.has(sheet)) {
+                onAdoptedSheetChange(sheet);
+            }
+        }
+        function reportSheetChangeAsync(sheet, promise) {
+            const {ownerNode} = sheet;
+            if (
+                ownerNode &&
+                !isDRSheet(sheet) &&
+                promise &&
+                promise instanceof Promise
+            ) {
+                promise.then(() => ownerNode.dispatchEvent(updateSheetEvent));
+            }
+            if (adoptedSheetOwners.has(sheet)) {
+                if (promise && promise instanceof Promise) {
+                    promise.then(() => onAdoptedSheetChange(sheet));
+                }
+            }
+        }
+        override(
+            CSSStyleSheet,
+            "addRule",
+            (native) =>
+                function (selector, style, index) {
+                    native.call(this, selector, style, index);
+                    reportSheetChange(this);
+                    return -1;
+                }
+        );
+        override(
+            CSSStyleSheet,
+            "insertRule",
+            (native) =>
+                function (rule, index) {
+                    const returnValue = native.call(this, rule, index);
+                    reportSheetChange(this);
+                    return returnValue;
+                }
+        );
+        override(
+            CSSStyleSheet,
+            "deleteRule",
+            (native) =>
+                function (index) {
+                    native.call(this, index);
+                    reportSheetChange(this);
+                }
+        );
+        override(
+            CSSStyleSheet,
+            "removeRule",
+            (native) =>
+                function (index) {
+                    native.call(this, index);
+                    reportSheetChange(this);
+                }
+        );
+        override(
+            CSSStyleSheet,
+            "replace",
+            (native) =>
+                function (cssText) {
+                    const returnValue = native.call(this, cssText);
+                    reportSheetChangeAsync(this, returnValue);
+                    return returnValue;
+                }
+        );
+        override(
+            CSSStyleSheet,
+            "replaceSync",
+            (native) =>
+                function (cssText) {
+                    native.call(this, cssText);
+                    reportSheetChange(this);
+                }
+        );
+        override(
+            Element,
+            "attachShadow",
+            (native) =>
+                function (options) {
+                    this.dispatchEvent(shadowDomAttachingEvent);
+                    return native.call(this, options);
+                }
+        );
+        const shouldWrapHTMLElement =
+            location.hostname === "baidu.com" ||
+            location.hostname.endsWith(".baidu.com");
+        if (shouldWrapHTMLElement) {
+            override(
+                Element,
+                "getElementsByTagName",
+                (native) =>
+                    function (tagName) {
+                        if (tagName !== "style") {
+                            return native.call(this, tagName);
+                        }
+                        const getCurrentElementValue = () => {
+                            const elements = native.call(this, tagName);
+                            return Object.setPrototypeOf(
+                                [...elements].filter(
+                                    (element) =>
+                                        element && !isDRElement(element)
+                                ),
+                                NodeList.prototype
+                            );
+                        };
+                        let elements = getCurrentElementValue();
+                        const nodeListBehavior = {
+                            get: function (_, property) {
+                                return getCurrentElementValue()[
+                                    Number(property) || property
+                                ];
+                            }
+                        };
+                        elements = new Proxy(elements, nodeListBehavior);
+                        return elements;
+                    }
+            );
+        }
+        const shouldProxyChildNodes = ["brilliant.org", "www.vy.no"].includes(
+            location.hostname
+        );
+        if (shouldProxyChildNodes) {
+            overrideProperty(Node, "childNodes", {
+                get: (native) =>
+                    function () {
+                        const childNodes = native.call(this);
+                        return Object.setPrototypeOf(
+                            [...childNodes].filter((element) => {
+                                return !isDRElement(element);
+                            }),
+                            NodeList.prototype
+                        );
+                    }
+            });
+        }
+        function resolveCustomElement(tag) {
+            customElements.whenDefined(tag).then(() => {
+                document.dispatchEvent(
+                    new CustomEvent("__darkreader__isDefined", {detail: {tag}})
+                );
+            });
+        }
+        documentEventListener("__darkreader__addUndefinedResolver", (e) =>
+            resolveCustomElement(e.detail.tag)
+        );
+        if (enableCustomElementRegistryProxy) {
+            override(
+                CustomElementRegistry,
+                "define",
+                (native) =>
+                    function (name, constructor, options) {
+                        resolveCustomElement(name);
+                        native.call(this, name, constructor, options);
+                    }
+            );
+        }
+        async function checkBlobURLSupport() {
+            const svg =
+                '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="transparent"/></svg>';
+            const bytes = new Uint8Array(svg.length);
+            for (let i = 0; i < svg.length; i++) {
+                bytes[i] = svg.charCodeAt(i);
+            }
+            const blob = new Blob([bytes], {type: "image/svg+xml"});
+            const objectURL = URL.createObjectURL(blob);
+            let blobURLAllowed;
+            try {
+                const image = new Image();
+                await new Promise((resolve, reject) => {
+                    image.onload = () => resolve();
+                    image.onerror = () => reject();
+                    image.src = objectURL;
+                });
+                blobURLAllowed = true;
+            } catch (err) {
+                blobURLAllowed = false;
+            }
+            document.dispatchEvent(
+                new CustomEvent("__darkreader__blobURLCheckResponse", {
+                    detail: {blobURLAllowed}
+                })
+            );
+        }
+        documentEventListener(
+            "__darkreader__blobURLCheckRequest",
+            checkBlobURLSupport,
+            {once: true}
+        );
+        if (enableStyleSheetsProxy) {
+            overrideProperty(Document, "styleSheets", {
+                get: (native) =>
+                    function () {
+                        const getCurrentValue = () => {
+                            const docSheets = native.call(this);
+                            const filteredSheets = [...docSheets].filter(
+                                (styleSheet) =>
+                                    styleSheet.ownerNode &&
+                                    !isDRSheet(styleSheet)
+                            );
+                            filteredSheets.item = (item) =>
+                                filteredSheets[item];
+                            return Object.setPrototypeOf(
+                                filteredSheets,
+                                StyleSheetList.prototype
+                            );
+                        };
+                        let elements = getCurrentValue();
+                        const styleSheetListBehavior = {
+                            get: function (_, property) {
+                                return getCurrentValue()[property];
+                            }
+                        };
+                        elements = new Proxy(elements, styleSheetListBehavior);
+                        return elements;
+                    }
+            });
+        }
+        {
+            const adoptedSheetsSourceProxies = new WeakMap();
+            const adoptedSheetsProxySources = new WeakMap();
+            const adoptedSheetsChangeEvent = new CustomEvent(
+                "__darkreader__adoptedStyleSheetsChange"
+            );
+            const adoptedSheetOverrideCache = new WeakSet();
+            const adoptedSheetsSnapshots = new WeakMap();
+            const isDRAdoptedSheetOverride = (sheet) => {
+                if (!sheet || !sheet.cssRules) {
+                    return false;
+                }
+                if (adoptedSheetOverrideCache.has(sheet)) {
+                    return true;
+                }
+                if (
+                    sheet.cssRules.length > 0 &&
+                    sheet.cssRules[0].cssText.startsWith(
+                        "#__darkreader__adoptedOverride"
+                    )
+                ) {
+                    adoptedSheetOverrideCache.add(sheet);
+                    return true;
+                }
+                return false;
+            };
+            const areArraysEqual = (a, b) => {
+                return a.length === b.length && a.every((x, i) => x === b[i]);
+            };
+            const onAdoptedSheetsChange = (node) => {
+                const prev = adoptedSheetsSnapshots.get(node);
+                const curr = (node.adoptedStyleSheets || []).filter(
+                    (s) => !isDRAdoptedSheetOverride(s)
+                );
+                adoptedSheetsSnapshots.set(node, curr);
+                if (!prev || !areArraysEqual(prev, curr)) {
+                    curr.forEach((sheet) => {
+                        if (!adoptedSheetOwners.has(sheet)) {
+                            adoptedSheetOwners.set(sheet, new Set());
+                        }
+                        adoptedSheetOwners.get(sheet).add(node);
+                        for (const rule of sheet.cssRules) {
+                            const declaration = rule.style;
+                            if (declaration) {
+                                adoptedDeclarationSheets.set(
+                                    declaration,
+                                    sheet
+                                );
+                            }
+                        }
+                    });
+                    node.dispatchEvent(adoptedSheetsChangeEvent);
+                }
+            };
+            const proxyAdoptedSheetsArray = (node, source) => {
+                if (adoptedSheetsProxySources.has(source)) {
+                    return source;
+                }
+                if (adoptedSheetsSourceProxies.has(source)) {
+                    return adoptedSheetsSourceProxies.get(source);
+                }
+                const proxy = new Proxy(source, {
+                    deleteProperty(target, property) {
+                        delete target[property];
+                        return true;
+                    },
+                    set(target, property, value) {
+                        target[property] = value;
+                        if (property === "length") {
+                            onAdoptedSheetsChange(node);
+                        }
+                        return true;
+                    }
+                });
+                adoptedSheetsSourceProxies.set(source, proxy);
+                adoptedSheetsProxySources.set(proxy, source);
+                return proxy;
+            };
+            [Document, ShadowRoot].forEach((ctor) => {
+                overrideProperty(ctor, "adoptedStyleSheets", {
+                    get: (native) =>
+                        function () {
+                            const source = native.call(this);
+                            return proxyAdoptedSheetsArray(this, source);
+                        },
+                    set: (native) =>
+                        function (source) {
+                            if (adoptedSheetsProxySources.has(source)) {
+                                source = adoptedSheetsProxySources.get(source);
+                            }
+                            native.call(this, source);
+                            onAdoptedSheetsChange(this);
+                        }
+                });
+            });
+            const adoptedDeclarationChangeEvent = new CustomEvent(
+                "__darkreader__adoptedStyleDeclarationChange"
+            );
+            ["setProperty", "removeProperty"].forEach((key) => {
+                override(CSSStyleDeclaration, key, (native) => {
+                    return function (...args) {
+                        const returnValue = native.apply(this, args);
+                        const sheet = adoptedDeclarationSheets.get(this);
+                        if (sheet) {
+                            const owners = adoptedSheetOwners.get(sheet);
+                            if (owners) {
+                                owners.forEach((node) => {
+                                    node.dispatchEvent(
+                                        adoptedDeclarationChangeEvent
+                                    );
+                                });
+                            }
+                        }
+                        return returnValue;
+                    };
+                });
+            });
+        }
+    }
 
-          <ul class="user-list">
-            <li class="user-item">
-              <a class="search" href="#">
-                <svg
-                  class="navigation-icon"
-                  aria-hidden="true"
-                  focusable="false"
-                  width="20"
-                  height="20"
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <path
-                    d="M19.5 18.0083L15.8 14.3287C16.8 13.0359 17.5 11.3453 17.5 9.4558C17.5 5.08011 13.9 1.5 9.5 1.5C5.1 1.5 1.5 5.17956 1.5 9.55525C1.5 13.9309 5.1 17.511 9.5 17.511C11.3 17.511 13 16.9144 14.4 15.8204L18.1 19.5L19.5 18.0083ZM9.5 15.5221C6.2 15.5221 3.5 12.837 3.5 9.55525C3.5 6.27348 6.2 3.5884 9.5 3.5884C12.8 3.5884 15.5 6.27348 15.5 9.55525C15.5 12.837 12.8 15.5221 9.5 15.5221Z"
-                    fill="black"
-                  />
-                </svg>
-                <span class="visually-hidden">Поиск</span></a
-              >
-            </li>
-            <li class="user-item">
-              <a class="likes" href="#">
-                <svg
-                  class="navigation-icon"
-                  aria-hidden="true"
-                  focusable="false"
-                  width="18"
-                  height="17"
-                  viewBox="0 0 18 17"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <path
-                    d="M8.9 17C8.6 17 8.3 16.9 8.1 16.6C2.7 10.5 1.4 9.1 1.1 8.7C0.4 7.8 0 6.6 0 5.4C0 2.4 2.4 0 5.5 0C6.8 0 8 0.5 9 1.3C10 0.5 11.3 0 12.5 0C15.5 0 18 2.4 18 5.4C18 6.7 17.5 7.9 16.7 8.8L9.7 16.7C9.5 16.9 9.3 17 8.9 17ZM2.9 7.5C3.2 7.9 6.4 11.5 9 14.4L15.2 7.4C15.7 6.9 15.9 6.2 15.9 5.4C15.9 3.6 14.4 2.1 12.6 2.1C11.6 2.1 10.6 2.6 9.9 3.4C9.6 3.7 9.3 3.8 9 3.8C8.7 3.8 8.4 3.6 8.2 3.4C7.5 2.6 6.5 2.1 5.5 2.1C3.7 2.1 2.2 3.6 2.2 5.4C2.1 6.3 2.5 7 2.9 7.5C2.8 7.5 2.8 7.5 2.9 7.5Z"
-                    fill="black"
-                  />
-                </svg>
-                <span class="visually-hidden">избранное и отзывы</span
-                ><b>12</b></a
-              >
-            </li>
-            <li class="user-item">
-              <a
-                class="button button-registration go-to-modal"
-                href="modal.html"
-              >
-                ХОЧУ СЮДА!
-              </a>
-            </li>
-          </ul>
-        </nav>
-      </header>
+    var MessageTypeUItoBG;
+    (function (MessageTypeUItoBG) {
+        MessageTypeUItoBG["GET_DATA"] = "ui-bg-get-data";
+        MessageTypeUItoBG["GET_DEVTOOLS_DATA"] = "ui-bg-get-devtools-data";
+        MessageTypeUItoBG["SUBSCRIBE_TO_CHANGES"] =
+            "ui-bg-subscribe-to-changes";
+        MessageTypeUItoBG["UNSUBSCRIBE_FROM_CHANGES"] =
+            "ui-bg-unsubscribe-from-changes";
+        MessageTypeUItoBG["CHANGE_SETTINGS"] = "ui-bg-change-settings";
+        MessageTypeUItoBG["SET_THEME"] = "ui-bg-set-theme";
+        MessageTypeUItoBG["TOGGLE_ACTIVE_TAB"] = "ui-bg-toggle-active-tab";
+        MessageTypeUItoBG["MARK_NEWS_AS_READ"] = "ui-bg-mark-news-as-read";
+        MessageTypeUItoBG["MARK_NEWS_AS_DISPLAYED"] =
+            "ui-bg-mark-news-as-displayed";
+        MessageTypeUItoBG["LOAD_CONFIG"] = "ui-bg-load-config";
+        MessageTypeUItoBG["APPLY_DEV_DYNAMIC_THEME_FIXES"] =
+            "ui-bg-apply-dev-dynamic-theme-fixes";
+        MessageTypeUItoBG["RESET_DEV_DYNAMIC_THEME_FIXES"] =
+            "ui-bg-reset-dev-dynamic-theme-fixes";
+        MessageTypeUItoBG["APPLY_DEV_INVERSION_FIXES"] =
+            "ui-bg-apply-dev-inversion-fixes";
+        MessageTypeUItoBG["RESET_DEV_INVERSION_FIXES"] =
+            "ui-bg-reset-dev-inversion-fixes";
+        MessageTypeUItoBG["APPLY_DEV_STATIC_THEMES"] =
+            "ui-bg-apply-dev-static-themes";
+        MessageTypeUItoBG["RESET_DEV_STATIC_THEMES"] =
+            "ui-bg-reset-dev-static-themes";
+        MessageTypeUItoBG["COLOR_SCHEME_CHANGE"] = "ui-bg-color-scheme-change";
+        MessageTypeUItoBG["HIDE_HIGHLIGHTS"] = "ui-bg-hide-highlights";
+    })(MessageTypeUItoBG || (MessageTypeUItoBG = {}));
+    var MessageTypeBGtoUI;
+    (function (MessageTypeBGtoUI) {
+        MessageTypeBGtoUI["CHANGES"] = "bg-ui-changes";
+    })(MessageTypeBGtoUI || (MessageTypeBGtoUI = {}));
+    var DebugMessageTypeBGtoUI;
+    (function (DebugMessageTypeBGtoUI) {
+        DebugMessageTypeBGtoUI["CSS_UPDATE"] = "debug-bg-ui-css-update";
+        DebugMessageTypeBGtoUI["UPDATE"] = "debug-bg-ui-update";
+    })(DebugMessageTypeBGtoUI || (DebugMessageTypeBGtoUI = {}));
+    var MessageTypeBGtoCS;
+    (function (MessageTypeBGtoCS) {
+        MessageTypeBGtoCS["ADD_CSS_FILTER"] = "bg-cs-add-css-filter";
+        MessageTypeBGtoCS["ADD_DYNAMIC_THEME"] = "bg-cs-add-dynamic-theme";
+        MessageTypeBGtoCS["ADD_STATIC_THEME"] = "bg-cs-add-static-theme";
+        MessageTypeBGtoCS["ADD_SVG_FILTER"] = "bg-cs-add-svg-filter";
+        MessageTypeBGtoCS["CLEAN_UP"] = "bg-cs-clean-up";
+        MessageTypeBGtoCS["FETCH_RESPONSE"] = "bg-cs-fetch-response";
+        MessageTypeBGtoCS["UNSUPPORTED_SENDER"] = "bg-cs-unsupported-sender";
+    })(MessageTypeBGtoCS || (MessageTypeBGtoCS = {}));
+    var DebugMessageTypeBGtoCS;
+    (function (DebugMessageTypeBGtoCS) {
+        DebugMessageTypeBGtoCS["RELOAD"] = "debug-bg-cs-reload";
+    })(DebugMessageTypeBGtoCS || (DebugMessageTypeBGtoCS = {}));
+    var MessageTypeCStoBG;
+    (function (MessageTypeCStoBG) {
+        MessageTypeCStoBG["COLOR_SCHEME_CHANGE"] = "cs-bg-color-scheme-change";
+        MessageTypeCStoBG["DARK_THEME_DETECTED"] = "cs-bg-dark-theme-detected";
+        MessageTypeCStoBG["DARK_THEME_NOT_DETECTED"] =
+            "cs-bg-dark-theme-not-detected";
+        MessageTypeCStoBG["FETCH"] = "cs-bg-fetch";
+        MessageTypeCStoBG["DOCUMENT_CONNECT"] = "cs-bg-document-connect";
+        MessageTypeCStoBG["DOCUMENT_FORGET"] = "cs-bg-document-forget";
+        MessageTypeCStoBG["DOCUMENT_FREEZE"] = "cs-bg-document-freeze";
+        MessageTypeCStoBG["DOCUMENT_RESUME"] = "cs-bg-document-resume";
+    })(MessageTypeCStoBG || (MessageTypeCStoBG = {}));
+    var DebugMessageTypeCStoBG;
+    (function (DebugMessageTypeCStoBG) {
+        DebugMessageTypeCStoBG["LOG"] = "debug-cs-bg-log";
+    })(DebugMessageTypeCStoBG || (DebugMessageTypeCStoBG = {}));
+    var MessageTypeCStoUI;
+    (function (MessageTypeCStoUI) {
+        MessageTypeCStoUI["EXPORT_CSS_RESPONSE"] = "cs-ui-export-css-response";
+    })(MessageTypeCStoUI || (MessageTypeCStoUI = {}));
+    var MessageTypeUItoCS;
+    (function (MessageTypeUItoCS) {
+        MessageTypeUItoCS["EXPORT_CSS"] = "ui-cs-export-css";
+    })(MessageTypeUItoCS || (MessageTypeUItoCS = {}));
 
-      <main class="main-container" data-test="main">
-        <section class="hero" data-test="hero">
-          <h2 class="visually-hidden">курорт Седона</h2>
-          <img
-            class="hero-image-item-first"
-            src="./img/hero-text-welcome.svg"
-            width="188"
-            height="45"
-            alt="Welcome to the gargeous"
-          />
-          <img
-            class="hero-image-item-second"
-            src="./img/hero-text-to-the-gargerous.svg"
-            width="256"
-            height="29"
-            alt="Sedona"
-          />
-          <img
-            class="hero-image-item-third"
-            src="./img/hero-text-sedona.svg"
-            width="457"
-            height="213"
-            alt="Because the grand canyon sucks"
-          />
-        </section>
+    function logInfo(...args) {}
 
-        <section class="welcome" data-test="welcome">
-          <h2 class="visually-hidden">Информация о Седоне</h2>
-          <p class="subtitle">
-            Седона — небольшой городок в Аризоне, заслуживающий большего!
-          </p>
-          <p>Рассмотрим причины, по которым Седона круче, чем Гранд-Каньон!</p>
-        </section>
-
-        <section class="advantages" data-test="advantages">
-          <h2 class="visually-hidden">Преимущества курорта Седона</h2>
-          <ul class="advantages-list">
-            <li class="advantages-item text-cell">
-              <span class="advatnages-titles advantages-titles-white"
-                >Настоящий городок</span
-              >
-              <p class="advantages-titles advantages-titles-white">
-                Седона — не аттракцион для туристов, там течёт своя жизнь
-              </p>
-            </li>
-            <li class="advantages-item advantages-item-image">
-              <img
-                class="advantages-image"
-                src="./img/advantages-photo1_town.jpg"
-                width="800"
-                height="385"
-                alt="Фото внешних фасадов"
-              />
-            </li>
-            <li class="advantages-item">
-              <span class="advatnages-titles">Небольшая площадь</span>
-              <p>Все достопримечательности находятся очень близко</p>
-            </li>
-            <li class="advantages-item">
-              <span class="advatnages-titles">Красивая дорога</span>
-              <p>Ехать в Седону из Лас-Вегаса совсем не скучно!</p>
-            </li>
-            <li class="advantages-item">
-              <span class="advatnages-titles">Мало туристов</span>
-              <p>Большинство едет в Гранд Каньон и толпится там</p>
-            </li>
-            <li class="advantages-item advantages-item-image">
-              <img
-                class="advantages-image"
-                src="./img/advantages-photo2_canyon.jpg"
-                width="800"
-                height="385"
-                alt="Фото горных каньонов"
-              />
-            </li>
-            <li class="advantages-item">
-              <span class="advatnages-titles advantages-titles-white"
-                >Там есть мост дьявола</span
-              >
-              <p class="advantages-titles advantages-titles-white">
-                Да, по нему можно пройти! Если вы осмелитесь, разумеется
-              </p>
-            </li>
-          </ul>
-        </section>
-
-        <section class="residence" data-test="residence">
-          <div class="welcome2-container">
-            <h2 class="visually-hidden">Условия проживания</h2>
-            <p class="subtitle">
-              Приезжайте в Седону отдохнуть в комфорте и уюте!
-            </p>
-            <p>Опытный персонал и качественное обслуживание!</p>
-          </div>
-          <ul class="residence-list">
-            <li class="residence-item">
-              <span class="residence-titles">Жильё</span>
-              <p>Рекомендуем пожить в настоящем мотеле, всё как в кино!</p>
-            </li>
-            <li class="residence-item">
-              <span class="residence-titles">Еда</span>
-              <p>
-                Всегда заказывайте топовый фирменный бургер, вы не
-                разочаруетесь!
-              </p>
-            </li>
-            <li class="residence-item">
-              <span class="residence-titles">Сувениры</span>
-              <p>
-                Не только китайского, но и настоящего местного производства!
-              </p>
-            </li>
-          </ul>
-        </section>
-
-        <section class="registration" data-test="registration">
-          <h2 class="visually-hidden">Регистрация в гостинице</h2>
-          <p class="subtitle">Заинтересовались?</p>
-          <p>
-            Укажите предполагаемые даты поездки,и мы покажем вам лучшие
-            предложения гостиниц в Седоне
-          </p>
-          <a href="catalog.html" class="registration-link">
-            <button class="button button-registration" type="button">
-              ПОИСК ГОСТИНИЦЫ В СЕДОНЕ
-            </button>
-          </a>
-        </section>
-
-        <section class="subscribe subscribe-white" data-test="subscribe">
-          <h2 class="subtitle subtitle-white">Подпишитесь на рассылку</h2>
-          <p>
-            Только полезная информация и никакого спама, честное бойскаутское!
-          </p>
-          <form
-            class="subscribe-form"
-            action="https://echo.htmlacademy.ru/"
-            method="post"
-          >
-            <span class="visually-hidden"
-              >Ввод адреса электронного почтового ящика</span
-            >
-            <input
-              type="email"
-              name="e-mail adress"
-              placeholder="Ваш e-mail"
-              required
-            />
-            <button type="submit" class="button button-subscribe button-add">
-              Подписаться
-            </button>
-          </form>
-        </section>
-      </main>
-
-      <footer class="page-footer" data-test="footer">
-        <ul class="social-list">
-          <li class="social-icon-item">
-            <a class="social-icon-link" href="#">
-              <svg class="footer-vk-icon">
-                <use xlink:href="footer-sprite.svg#icon-vk"></use>
-              </svg>
-            </a>
-          </li>
-          <li class="social-icon-item">
-            <a class="social-icon-link" href="#">
-              <svg class="footer-tg-icon">
-                <use xlink:href="footer-sprite.svg#icon-telegram"></use>
-              </svg>
-              <span class="visually-hidden">Телеграм</span>
-            </a>
-          </li>
-          <li class="social-icon-item">
-            <a class="social-icon-link" href="#">
-              <svg class="footer-yt-icon">
-                <use
-                  default-src="self"
-                  xlink:href="footer-sprite.svg#icon-YT"
-                ></use>
-              </svg>
-              <span class="visually-hidden">YouTube</span>
-            </a>
-          </li>
-        </ul>
-        <a class="tel" href="tel:+78121212">+7 (812) 812-12-12</a>
-        <a class="link-htmlacademy" href="https://up.htmlacademy.ru"
-          ><svg class="footer-academy-icon">
-            <use xlink:href="footer-sprite.svg#academy-logo"></use></svg
-          ><span class="visually-hidden">"логотип html-academy"></span></a
-        >
-      </footer>
-    </div>
-  </body>
-</html>
-
-<!--Защита-->
+    document.currentScript && document.currentScript.remove();
+    const key = "darkreaderProxyInjected";
+    const EVENT_DONE = "__darkreader__stylesheetProxy__done";
+    const EVENT_ARG = "__darkreader__stylesheetProxy__arg";
+    const registeredScriptPath = !document.currentScript;
+    function injectProxyAndCleanup(args) {
+        injectProxy(
+            args.enableStyleSheetsProxy,
+            args.enableCustomElementRegistryProxy
+        );
+        doneReceiver();
+        document.dispatchEvent(new CustomEvent(EVENT_DONE));
+    }
+    function regularPath() {
+        const argString = document.currentScript.dataset.arg;
+        if (argString !== undefined) {
+            document.documentElement.dataset[key] = "true";
+            const args = JSON.parse(argString);
+            injectProxyAndCleanup(args);
+        }
+    }
+    function dataReceiver(e) {
+        document.removeEventListener(EVENT_ARG, dataReceiver);
+        if (document.documentElement.dataset[key] !== undefined) {
+            return;
+        }
+        document.documentElement.dataset[key] = "true";
+        logInfo(
+            `MV3 proxy injector: ${registeredScriptPath ? "registered" : "dedicated"} path runs injectProxy(${e.detail}).`
+        );
+        injectProxyAndCleanup(e.detail);
+    }
+    function doneReceiver() {
+        document.removeEventListener(EVENT_ARG, dataReceiver);
+        document.removeEventListener(EVENT_DONE, doneReceiver);
+    }
+    function dedicatedPath() {
+        const listenerOptions = {
+            passive: true,
+            once: true
+        };
+        document.addEventListener(EVENT_ARG, dataReceiver, listenerOptions);
+        document.addEventListener(EVENT_DONE, doneReceiver, listenerOptions);
+    }
+    function inject() {
+        if (document.documentElement.dataset[key] !== undefined) {
+            return;
+        }
+        document.currentScript && regularPath();
+        dedicatedPath();
+    }
+    inject();
+})();
